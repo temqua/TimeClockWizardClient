@@ -149,15 +149,20 @@ fun Content(paddingValues: PaddingValues) {
                     withContext(Dispatchers.IO) {
                         val result = fetchVerificationToken(userAgent, subDomainState)
                         if (result.successful && result.data.isNotEmpty()) {
+                            val cookies = result.data
+                            val cookieList = cookies.split(";")
+                            val verificationCookie = cookieList.find { cookie -> cookie.contains("__RequestVerificationToken") }
+                            val verificationToken = verificationCookie?.split("=")?.get(1) ?: ""
                             val submitResult = submitForm(
                                 userAgent,
                                 emailState,
                                 passwordState,
                                 subDomainState,
                                 commandState.toString(),
-                                result.data
+                                verificationToken,
+                                cookies
                             )
-                            if (submitResult.successful) {
+                            if (submitResult) {
                                 scaffoldState.snackbarHostState.showSnackbar(
                                     message = "You have been successfully authorized",
                                 )
@@ -188,16 +193,13 @@ fun fetchVerificationToken(userAgent: String, subDomain: String): Result {
         .addHeader("User-Agent", userAgent)
         .build()
     val loginResponse = client.newCall(loginRequest).execute()
+    val cookies = loginResponse.headers.values("set-cookie")
     if (!loginResponse.isSuccessful) {
         return Result(false, "")
     }
-    val responseBody = loginResponse.body ?: return Result(false, "")
-    val resp = responseBody.string()
-    val reg = Regex("""<input name="__RequestVerificationToken" type="hidden" value="([^"]+)" />""")
-    val (token) = reg.find(resp)?.destructured ?: return Result(false, "")
-    return Result(true, token)
+    val handledCookies = cookies.map { cookie -> cookie.split(";")[0] }.joinToString("; ")
+    return Result(true, handledCookies)
 }
-
 data class Result(
     val successful: Boolean,
     val data: String,
@@ -209,8 +211,9 @@ fun submitForm(
     password: String,
     subDomain: String,
     command: String,
-    token: String
-): Result {
+    token: String,
+    cookies: String
+): Boolean {
     val client = OkHttpClient()
     val requestBody = MultipartBody.Builder()
         .setType(MultipartBody.FORM)
@@ -224,9 +227,10 @@ fun submitForm(
         .build()
     val request = Request.Builder()
         .url("https://apps.timeclockwizard.com/Login")
+        .addHeader("User-Agent", userAgent)
+        .addHeader("Cookie", cookies)
         .post(requestBody)
         .build()
     val response = client.newCall(request).execute()
-    return Result(response.isSuccessful, "")
-
+    return response.isSuccessful
 }

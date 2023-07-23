@@ -1,5 +1,6 @@
 package io.github.temqua.timeclockwizardclient
 
+
 import android.content.res.Configuration
 import android.os.Bundle
 import android.webkit.WebSettings
@@ -15,14 +16,19 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.Button
 import androidx.compose.material.DropdownMenu
 import androidx.compose.material.DropdownMenuItem
+import androidx.compose.material.Icon
+import androidx.compose.material.IconButton
 import androidx.compose.material.OutlinedButton
 import androidx.compose.material.OutlinedTextField
 import androidx.compose.material.Scaffold
 import androidx.compose.material.ScaffoldState
+import androidx.compose.material.Snackbar
+import androidx.compose.material.SnackbarHost
 import androidx.compose.material.Text
 import androidx.compose.material.TopAppBar
 import androidx.compose.material.rememberScaffoldState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -30,7 +36,11 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
@@ -65,6 +75,16 @@ fun Main() {
         scaffoldState = rememberScaffoldState()
         Scaffold(
             scaffoldState = scaffoldState,
+            snackbarHost = {
+                SnackbarHost(
+                    hostState = it,
+                    snackbar = { data ->
+                        Snackbar(
+                            snackbarData = data
+                        )
+                    },
+                )
+            },
             topBar = {
                 TopAppBar(
                     title = { Text("TimeClockWizard Client") },
@@ -79,13 +99,27 @@ fun Main() {
 
 @Composable
 fun Content(paddingValues: PaddingValues) {
+    val context = LocalContext.current
+    val dataStore = Store(context)
+    val composableScope = rememberCoroutineScope()
+    val savedEmail = dataStore.emailFlow.collectAsState(initial = "")
+    val savedSubdomain = dataStore.subdomainFlow.collectAsState(initial = "")
     var emailState by remember { mutableStateOf("") }
     var passwordState by remember { mutableStateOf("") }
     var subDomainState by remember { mutableStateOf("") }
     var commandState by remember { mutableStateOf(TimerCommand.ClockIn) }
-    val composableScope = rememberCoroutineScope()
     var expanded by remember { mutableStateOf(false) }
-    val (snackbarVisibleState, setSnackBarState) = remember { mutableStateOf(false) }
+    var passwordVisibility by remember { mutableStateOf(false) }
+    if (savedEmail.value.isNotEmpty()) {
+        emailState = savedEmail.value
+    }
+    if (savedSubdomain.value.isNotEmpty()) {
+        subDomainState = savedSubdomain.value
+    }
+    val icon = if (passwordVisibility)
+        painterResource(id = R.drawable.baseline_visibility_off_24)
+    else
+        painterResource(id = R.drawable.baseline_visibility_24)
     Column(
         modifier = Modifier
             .padding(16.dp),
@@ -104,6 +138,17 @@ fun Content(paddingValues: PaddingValues) {
             value = passwordState,
             onValueChange = { passwordState = it.trim() },
             label = { Text(text = "Password") },
+            trailingIcon = {
+                IconButton(onClick = {
+                    passwordVisibility = !passwordVisibility
+                }) {
+                    Icon(
+                        painter = icon,
+                        contentDescription = "Visibility Icon"
+                    )
+                }
+            },
+            visualTransformation = if (passwordVisibility) VisualTransformation.None else PasswordVisualTransformation(),
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
         )
         Spacer(modifier = Modifier.height(8.dp))
@@ -111,7 +156,7 @@ fun Content(paddingValues: PaddingValues) {
             value = subDomainState,
             onValueChange = { subDomainState = it.trim() },
             modifier = Modifier.fillMaxWidth(),
-            label = { Text(text = "SubDomain") },
+            label = { Text(text = "Subdomain") },
         )
         Spacer(modifier = Modifier.height(8.dp))
         OutlinedButton(
@@ -142,40 +187,59 @@ fun Content(paddingValues: PaddingValues) {
                 content = { Text(text = "Clock Out") }
             )
         }
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(4.dp))
         Button(
             onClick = {
                 composableScope.launch {
+                    if (!android.util.Patterns.EMAIL_ADDRESS.matcher(emailState).matches()) {
+                        scaffoldState.snackbarHostState.showSnackbar(
+                            message = "You entered invalid email",
+                        )
+                        return@launch
+                    }
+                    if (subDomainState.isEmpty()) {
+                        scaffoldState.snackbarHostState.showSnackbar(
+                            message = "Subdomain field must contain data",
+                        )
+                        return@launch
+                    }
+                    if (passwordState.isEmpty()) {
+                        scaffoldState.snackbarHostState.showSnackbar(
+                            message = "Password field must contain data",
+                        )
+                        return@launch
+                    }
                     withContext(Dispatchers.IO) {
+                        dataStore.saveEmail(emailState)
+                        dataStore.saveSubdomain(subDomainState)
                         val result = fetchVerificationToken(userAgent, subDomainState)
-                        if (result.successful && result.data.isNotEmpty()) {
-                            val cookies = result.data
-                            val cookieList = cookies.split(";")
-                            val verificationCookie = cookieList.find { cookie -> cookie.contains("__RequestVerificationToken") }
-                            val verificationToken = verificationCookie?.split("=")?.get(1) ?: ""
-                            val submitResult = submitForm(
-                                userAgent,
-                                emailState,
-                                passwordState,
-                                subDomainState,
-                                commandState.toString(),
-                                verificationToken,
-                                cookies
-                            )
-                            if (submitResult) {
-                                scaffoldState.snackbarHostState.showSnackbar(
-                                    message = "You have been successfully authorized",
-                                )
-                            } else {
-                                scaffoldState.snackbarHostState.showSnackbar(
-                                    message = "Authorization unsuccessful. Check your credentials, please.",
-                                )
-                            }
-                        } else {
+                        if (!result.successful || result.data.isEmpty()) {
                             scaffoldState.snackbarHostState.showSnackbar(
-                                message = "Authorization unsuccessful. Check your internet connection, please.",
+                                message = "Authorization unsuccessful. Check your credentials and internet connection please. ${result.error}",
                             )
+                            return@withContext
                         }
+                        val cookies = result.data
+                        val cookieList = cookies.split(";")
+                        val verificationCookie =
+                            cookieList.find { cookie -> cookie.contains("__RequestVerificationToken") }
+                        val verificationToken = verificationCookie?.split("=")?.get(1) ?: ""
+                        val submitResult = submitForm(
+                            userAgent,
+                            emailState,
+                            passwordState,
+                            subDomainState,
+                            commandState.toString(),
+                            verificationToken,
+                            cookies
+                        )
+                        val msg =
+                            if (submitResult) "You have been successfully ${getMessage(commandState)}"
+                            else "Authorization unsuccessful. Check your credentials, please."
+
+                        scaffoldState.snackbarHostState.showSnackbar(
+                            message = msg,
+                        )
                     }
                 }
             },
@@ -184,6 +248,10 @@ fun Content(paddingValues: PaddingValues) {
             Text(text = "SUBMIT")
         }
     }
+}
+
+fun getMessage(command: TimerCommand): String {
+    return if (command == TimerCommand.ClockIn) "clocked in" else "clocked out"
 }
 
 fun fetchVerificationToken(userAgent: String, subDomain: String): Result {
@@ -195,14 +263,16 @@ fun fetchVerificationToken(userAgent: String, subDomain: String): Result {
     val loginResponse = client.newCall(loginRequest).execute()
     val cookies = loginResponse.headers.values("set-cookie")
     if (!loginResponse.isSuccessful) {
-        return Result(false, "")
+        return Result(false, "", loginResponse.message)
     }
     val handledCookies = cookies.map { cookie -> cookie.split(";")[0] }.joinToString("; ")
-    return Result(true, handledCookies)
+    return Result(true, handledCookies, "")
 }
+
 data class Result(
     val successful: Boolean,
     val data: String,
+    val error: String
 )
 
 fun submitForm(
@@ -219,11 +289,11 @@ fun submitForm(
         .setType(MultipartBody.FORM)
         .addFormDataPart("__RequestVerificationToken", token)
         .addFormDataPart("Subdomain", subDomain)
-        .addFormDataPart("ClientDetails.QuickClockInPassword", "true")
-        .addFormDataPart("ClientDetails.QuickClockIn", command)
+        .addFormDataPart("ClientDetails.QuickClockInPassword", "True")
+        .addFormDataPart("ClientDetails.QuickClockIn", "True")
         .addFormDataPart("UserName", email)
         .addFormDataPart("Password", password)
-        .addFormDataPart("command", "LogIn")
+        .addFormDataPart("command", command)
         .build()
     val request = Request.Builder()
         .url("https://apps.timeclockwizard.com/Login")
@@ -232,5 +302,6 @@ fun submitForm(
         .post(requestBody)
         .build()
     val response = client.newCall(request).execute()
-    return response.isSuccessful
+    val receivedCookies = response.headers.values("set-cookie")
+    return response.isSuccessful && receivedCookies.isNotEmpty()
 }

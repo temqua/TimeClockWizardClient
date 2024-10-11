@@ -320,7 +320,7 @@ fun fetchVerificationToken(userAgent: String, subDomain: String): Result {
     if (!loginResponse.isSuccessful) {
         return Result(false, "", loginResponse.message)
     }
-    val handledCookies = cookies.map { cookie -> cookie.split(";")[0] }.joinToString("; ")
+    val handledCookies = cookies.joinToString("; ") { cookie -> cookie.split(";")[0] }
     return Result(true, handledCookies, "")
 }
 
